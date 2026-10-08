@@ -337,3 +337,33 @@ describe("owners, privacy", () => {
     expect(again.status).toBe("needs_human");
   });
 });
+
+describe("seeding an existing database (upgrade path)", () => {
+  it("adds newly introduced sample people and articles without duplicating anything", async () => {
+    const t = convexTest(schema, modules);
+    // Simulate a database seeded by an older version: only one tenant, one article, one ticket.
+    await t.run(async (ctx: any) => {
+      const u = await ctx.db.insert("units", { building: "Linden Court 12", label: "Apt 3B", sourceId: "u1" });
+      const c = await ctx.db.insert("contacts", { name: "Maria Keller", phones: ["+4915112345678"], emails: [], role: "tenant", unitId: u, sourceId: "c1" });
+      await ctx.db.insert("contactAddresses", { address: "+4915112345678", contactId: c });
+      await ctx.db.insert("kbArticles", { title: "Quiet hours", body: "old" });
+      await ctx.db.insert("tickets", { category: "maintenance", urgency: "normal", summary: "x", status: "open" });
+    });
+    expect(await t.mutation(fn("demo:seed"), {})).toMatch(/added/);
+    expect(await t.mutation(fn("demo:seed"), {})).toBe("already seeded");
+    const n = await t.run(async (ctx: any) => ({
+      contacts: (await ctx.db.query("contacts").collect()).map((c: any) => c.name).sort(),
+      kb: (await ctx.db.query("kbArticles").collect()).length,
+      tickets: (await ctx.db.query("tickets").collect()).length,
+    }));
+    expect(n.contacts).toEqual(["Aiko Sato", "Klaus Brandt", "Maria Keller", "Tom Becker"]);
+    expect(n.kb).toBe(6);
+    expect(n.tickets).toBe(1); // no sample tickets re-created on an existing database
+    // Klaus is now a known owner, not an unknown sender
+    await t.action(fn("demo:simulate"), { channel: "email", externalId: "u1", from: "k.brandt@example.com", body: "The annual statement charges me for a lift repair I never approved. This is wrong." });
+    await settle(t);
+    const c = (await state(t)).conversations[0];
+    expect(c).toMatchObject({ name: "Klaus Brandt", role: "owner", status: "needs_human" });
+    expect(c.escalationReason).toMatch(/Owner statement/);
+  });
+});
