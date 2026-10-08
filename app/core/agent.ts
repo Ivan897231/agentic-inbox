@@ -6,7 +6,8 @@ export type LlmMessage =
   | { role: "tool"; callId: string; name: string; content: string };
 
 export interface ToolCall { id: string; name: string; args: Record<string, any> }
-export interface LlmTurn { text: string; toolCalls: ToolCall[] }
+export interface Usage { inputTokens: number; outputTokens: number; cacheReadTokens?: number }
+export interface LlmTurn { text: string; toolCalls: ToolCall[]; usage?: Usage }
 export interface ToolDef { name: string; description: string; schema: Record<string, any> }
 
 /** The only thing that changes between a real model and the offline demo model. */
@@ -22,9 +23,11 @@ export interface TraceStep {
   ms: number;
 }
 
-export interface AgentResult { steps: TraceStep[]; replied: boolean; escalated: boolean }
+export interface AgentResult { steps: TraceStep[]; replied: boolean; escalated: boolean; usage: Usage; llmCalls: number }
 
-export const SYSTEM = `You are the first-line assistant for a property management company.
+export interface AgentOptions { maxSteps?: number; systemPrompt?: string; enabledTools?: string[] }
+
+export const DEFAULT_SYSTEM = `You are the first-line assistant for a property management company.
 Identify the sender, check their unit's open tickets, search the knowledge base before answering,
 create a ticket for anything that needs a technician, and escalate to a human for emergencies,
 legal/billing disputes, or when unsure. Never invent policies. Reply in the sender's language, briefly.`;
@@ -54,19 +57,31 @@ export const TOOLS: ToolDef[] = [
  * Bounded tool loop. Guardrails: hard step cap, tool errors are fed back to the model
  * instead of crashing the run, and a run that hits the cap escalates to a human.
  */
-export async function runAgent(msg: InboundMessage, ports: Ports, llm: Llm, maxSteps = 8): Promise<AgentResult> {
+export async function runAgent(msg: InboundMessage, ports: Ports, llm: Llm, opts: AgentOptions = {}): Promise<AgentResult> {
+  const { maxSteps = 8, systemPrompt = DEFAULT_SYSTEM } = opts;
+  // `reply` and `escalate` always stay available: a run must always be able to finish safely.
+  const allowed = new Set([...(opts.enabledTools ?? TOOLS.map((t) => t.name)), "reply", "escalate"]);
+  const tools = TOOLS.filter((t) => allowed.has(t.name));
+  const usage: Usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 };
+  let llmCalls = 0;
   const steps: TraceStep[] = [];
   const history: LlmMessage[] = [{ role: "user", content: msg.subject ? `${msg.subject}\n\n${msg.body}` : msg.body }];
   let contactId: string | undefined, unitId: string | undefined;
 
   for (let i = 0; i < maxSteps; i++) {
-    const turn = await llm.next(SYSTEM, history, TOOLS);
+    const turn = await llm.next(systemPrompt, history, tools);
+    llmCalls++;
+    if (turn.usage) {
+      usage.inputTokens += turn.usage.inputTokens;
+      usage.outputTokens += turn.usage.outputTokens;
+      usage.cacheReadTokens = (usage.cacheReadTokens ?? 0) + (turn.usage.cacheReadTokens ?? 0);
+    }
     history.push({ role: "assistant", content: turn.text, toolCalls: turn.toolCalls });
     if (!turn.toolCalls.length) { // model answered without a tool: treat as the reply
       const t0 = Date.now();
       await ports.sendReply(turn.text);
       steps.push({ kind: "reply", args: { text: turn.text }, ms: Date.now() - t0 });
-      return { steps, replied: true, escalated: false };
+      return { steps, replied: true, escalated: false, usage, llmCalls };
     }
     for (const call of turn.toolCalls) {
       const t0 = Date.now();
@@ -74,6 +89,7 @@ export async function runAgent(msg: InboundMessage, ports: Ports, llm: Llm, maxS
         steps.push({ kind, name: call.name, args: call.args, result, ms: Date.now() - t0 });
       try {
         let result: unknown;
+        if (!allowed.has(call.name) && TOOLS.some((t) => t.name === call.name)) throw new Error(`tool ${call.name} is disabled for this agent`);
         switch (call.name) {
           case "find_contact": {
             const c = await ports.findContact(msg.channel === "email" ? { email: msg.from } : { phone: msg.from });
@@ -101,11 +117,11 @@ export async function runAgent(msg: InboundMessage, ports: Ports, llm: Llm, maxS
           case "reply":
             await ports.sendReply(String(call.args.text));
             done("reply");
-            return { steps, replied: true, escalated: false };
+            return { steps, replied: true, escalated: false, usage, llmCalls };
           case "escalate":
             await ports.escalate(String(call.args.reason));
             done("escalate");
-            return { steps, replied: false, escalated: true };
+            return { steps, replied: false, escalated: true, usage, llmCalls };
           default:
             throw new Error(`unknown tool ${call.name}`);
         }
@@ -120,5 +136,5 @@ export async function runAgent(msg: InboundMessage, ports: Ports, llm: Llm, maxS
   }
   await ports.escalate("Agent hit step limit");
   steps.push({ kind: "limit", ms: 0 });
-  return { steps, replied: false, escalated: true };
+  return { steps, replied: false, escalated: true, usage, llmCalls };
 }

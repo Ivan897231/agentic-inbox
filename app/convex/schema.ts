@@ -18,14 +18,16 @@ export default defineSchema({
 
   // Lookup tables: a contact can have many addresses, and we match inbound by exact address.
   contactAddresses: defineTable({ address: v.string(), contactId: v.id("contacts") })
-    .index("by_address", ["address"]),
+    .index("by_address", ["address"])
+    .index("by_contact", ["contactId"]),
 
   conversations: defineTable({
     party: v.string(),
     channel,
     contactId: v.optional(v.id("contacts")),
-    status: v.union(v.literal("open"), v.literal("agent_handled"), v.literal("needs_human")),
+    status: v.union(v.literal("open"), v.literal("agent_handled"), v.literal("needs_human"), v.literal("resolved")),
     lastAt: v.number(),
+    escalationReason: v.optional(v.string()),
   })
     .index("by_party_channel", ["party", "channel"])
     .index("by_status_lastAt", ["status", "lastAt"]),
@@ -37,6 +39,10 @@ export default defineSchema({
     externalId: v.optional(v.string()),
     body: v.string(),
     by: v.optional(v.union(v.literal("agent"), v.literal("human"))),
+    // Outbound delivery state machine: pending -> sent | failed | skipped (no provider configured).
+    delivery: v.optional(v.union(v.literal("pending"), v.literal("sent"), v.literal("failed"), v.literal("skipped"))),
+    deliveryNote: v.optional(v.string()),
+    attempts: v.optional(v.number()),
   })
     .index("by_conversation", ["conversationId"])
     // The idempotency key: provider retries hit this index and become no-ops.
@@ -58,7 +64,24 @@ export default defineSchema({
     conversationId: v.id("conversations"),
     steps: v.any(),
     outcome: v.union(v.literal("replied"), v.literal("escalated"), v.literal("failed")),
+    usage: v.optional(v.any()),
+    llmCalls: v.optional(v.number()),
+    model: v.optional(v.string()),
+    ms: v.optional(v.number()),
   }).index("by_conversation", ["conversationId"]),
+
+  // One row per configurable agent. Customers edit prompt + tools without a deploy.
+  agents: defineTable({
+    name: v.string(),
+    systemPrompt: v.string(),
+    enabledTools: v.array(v.string()),
+    maxSteps: v.number(),
+    model: v.optional(v.string()),
+  }),
+
+  // Staging area for bulk imports: the client uploads parsed rows in chunks, ticks drain them by seq.
+  importRows: defineTable({ jobId: v.id("importJobs"), seq: v.number(), data: v.any() })
+    .index("by_job_seq", ["jobId", "seq"]),
 
   importJobs: defineTable({
     kind: v.string(),
@@ -66,6 +89,11 @@ export default defineSchema({
     done: v.boolean(),
     imported: v.number(),
     skipped: v.number(),
+    updated: v.optional(v.number()),
+    total: v.optional(v.number()),
+    parseErrors: v.optional(v.any()),
+    startedAt: v.optional(v.number()),
+    finishedAt: v.optional(v.number()),
     retry: v.any(),
     dead: v.any(),
     pageDone: v.array(v.string()),

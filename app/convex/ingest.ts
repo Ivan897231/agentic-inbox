@@ -29,7 +29,7 @@ export const receive = internalMutationGeneric({
     if (!conv) {
       const id = await ctx.db.insert("conversations", { party: m.from, channel: m.channel, contactId: addr?.contactId, status: "open", lastAt: now });
       conv = (await ctx.db.get(id))!;
-    } else await ctx.db.patch(conv._id, { lastAt: now, status: "open" });
+    } else await ctx.db.patch(conv._id, { lastAt: now, status: "open", escalationReason: undefined });
 
     await ctx.db.insert("messages", { conversationId: conv._id, direction: "in", channel: m.channel, externalId: m.externalId, body: m.body });
     // Run the agent out-of-band: the webhook must return 200 fast or providers retry.

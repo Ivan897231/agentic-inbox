@@ -117,7 +117,7 @@ describe("importer", () => {
     expect(s.dead).toEqual([{ sourceId: "r9", error: "bad record" }]);
     expect(db.has("r7")).toBe(true);
     expect(s.imported).toBe(19);
-    expect(s.imported + s.skipped + s.dead.length).toBe(20);
+    expect(s.imported + s.updated + s.skipped + s.dead.length).toBe(20);
     expect(s.retry).toEqual({});
   });
 });

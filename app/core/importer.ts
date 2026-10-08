@@ -17,6 +17,7 @@ export interface ImportState {
   cursor: string | null;
   done: boolean;
   imported: number;
+  updated: number;
   skipped: number;
   retry: Record<string, number>; // sourceId -> attempts
   dead: { sourceId: string; error: string }[];
@@ -24,14 +25,14 @@ export interface ImportState {
   pageDone: string[];
 }
 
-export const newImportState = (): ImportState => ({ cursor: null, done: false, imported: 0, skipped: 0, retry: {}, dead: [], pageDone: [] });
+export const newImportState = (): ImportState => ({ cursor: null, done: false, imported: 0, updated: 0, skipped: 0, retry: {}, dead: [], pageDone: [] });
 
 export const backoffMs = (attempt: number, rand = Math.random) => Math.min(60_000, 500 * 2 ** attempt) * (0.5 + rand() / 2);
 
 export async function importTick<T>(
   state: ImportState,
   source: ImportSource<T>,
-  upsert: (sourceId: string, data: T) => Promise<"created" | "unchanged">,
+  upsert: (sourceId: string, data: T) => Promise<"created" | "updated" | "unchanged">,
   opts: { batch?: number; maxAttempts?: number } = {},
 ): Promise<{ state: ImportState; nextDelayMs: number | null }> {
   const { batch = 100, maxAttempts = 4 } = opts;
@@ -44,7 +45,8 @@ export async function importTick<T>(
   for (const it of items) {
     if (settled.has(it.sourceId)) continue;
     try {
-      (await upsert(it.sourceId, it.data)) === "created" ? s.imported++ : s.skipped++;
+      const out = await upsert(it.sourceId, it.data);
+      if (out === "created") s.imported++; else if (out === "updated") s.updated++; else s.skipped++;
       delete s.retry[it.sourceId];
       settled.add(it.sourceId);
     } catch (e) {
