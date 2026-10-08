@@ -44,11 +44,18 @@ Click **Simulate inbound** (WhatsApp, SMS, email), watch the agent trace, and hi
 - Tools hit a `Ports` interface, so the same loop runs against Convex or memory.
 - Guardrails: hard step cap (then escalate), tool errors fed back to the model, unknown sender or emergency goes to a human, a crashed run escalates so no customer message is left unanswered, every step is recorded in `agentRuns`.
 
-## Honest limits
+## Status: what is verified
 
-- **The Convex layer typechecks but was not deployed or run**: I had no Convex account/network in the build environment. The logic it wraps is what's tested. Next step: `npx convex dev`, then run `codegen` and swap the string function refs (`"ingest:receive" as any`) for the generated `internal.*` references.
-- The demo model is scripted, not an LLM. Set `ANTHROPIC_API_KEY` in Convex env to use the real one; I haven't exercised that path against the live API.
-- Outbound sending (Twilio/Vonage/SMTP) is a marked TODO in `convex/agentTools.ts`; the importer adapter in `convex/importer.ts` is a stub.
+- **Verified on a live Convex deployment:** schema and indexes, the ingest mutation, the scheduled agent action running all tools against the real database, real-time UI updates, and idempotent re-delivery.
+- **Run it live:** `npx convex dev` in one terminal, `npm run dev` in another. With `VITE_CONVEX_URL` set (Convex writes it to `.env.local`) the UI uses the real backend; without it, the in-browser demo.
+- **Unit-tested:** normalizers, Twilio signature check, KB ranking, agent guardrails, importer retries and dead-lettering (`npm test`).
+
+## Not done yet (honest limits)
+
+- The three HTTP webhooks are written and typecheck, but I have not pointed real Twilio, Vonage or email traffic at them. The in-app "simulate" path uses the same ingest mutation.
+- The agent runs on the scripted model by default. `anthropicLlm` is implemented but not exercised against the live API; set `ANTHROPIC_API_KEY` in the Convex dashboard to try it.
+- Outbound sending (Twilio/Vonage/SMTP) is a marked TODO in `convex/agentTools.ts`; the importer's source adapter in `convex/importer.ts` is a stub. The importer demo in the UI runs on in-memory data.
 - Vonage webhook auth is a shared bearer token; production should verify their signed JWT.
-- KB search is BM25 in `core/kb.ts` for the demo; Convex uses a search index and would use a vector index in production.
-- No shadcn/ui components yet; plain Tailwind.
+- KB search is a Convex text search index; production would add a vector index.
+- Function references are strings (`"ingest:receive"`) rather than generated `internal.*` references.
+- Plain Tailwind; no shadcn/ui components yet.
