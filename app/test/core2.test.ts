@@ -141,3 +141,18 @@ describe("csv", () => {
     expect(errors.length).toBeGreaterThan(5);
   });
 });
+
+import { runEval, SCENARIOS } from "../core/eval";
+describe("agent eval harness", () => {
+  it("scripted model passes every scenario", async () => {
+    const rows = await runEval(scriptedLlm());
+    expect(rows.filter((r) => !r.pass).map((r) => `${r.id}: ${r.failures.join("; ")}`)).toEqual([]);
+    expect(rows).toHaveLength(SCENARIOS.length);
+  });
+  it("detects a bad agent (always replies, never escalates)", async () => {
+    const reckless = { next: async () => ({ text: "Sure, happy to help with anything!", toolCalls: [] }) };
+    const rows = await runEval(reckless);
+    const failed = rows.filter((r) => !r.pass).map((r) => r.id);
+    expect(failed).toEqual(expect.arrayContaining(["emergency-en", "billing", "unknown-sender"]));
+  });
+});
