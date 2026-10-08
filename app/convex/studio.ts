@@ -47,5 +47,5 @@ export const removeKb = mutation({ args: { id: v.id("kbArticles") }, handler: as
 export const sandboxContacts = query({
   args: {},
   handler: async (ctx) =>
-    (await ctx.db.query("contacts").take(15)).map((c) => ({ id: c._id, name: c.name, phone: c.phones[0] ?? null, email: c.emails[0] ?? null })),
+    (await ctx.db.query("contacts").take(40)).filter((c) => !c.archivedAt).slice(0, 15).map((c) => ({ id: c._id, name: c.name, phone: c.phones[0] ?? null, email: c.emails[0] ?? null })),
 });

@@ -198,7 +198,7 @@ describe("csv migration (staged, chunked, resumable)", () => {
     const b = await runImport();
     expect(b).toMatchObject({ done: true, imported: 0, skipped: contacts.length });
     const total = await t.run(async (ctx: any) => (await ctx.db.query("contacts").collect()).length);
-    expect(total).toBe(3 + contacts.length); // 3 seeded + imported, no duplicates
+    expect(total).toBe(4 + contacts.length); // 4 seeded + imported, no duplicates
     const staged = await t.run(async (ctx: any) => (await ctx.db.query("importRows").collect()).length);
     expect(staged).toBe(0); // staging is cleaned up
   });
@@ -225,5 +225,115 @@ describe("csv migration (staged, chunked, resumable)", () => {
     };
     expect(await go("Old Name")).toMatchObject({ imported: 1 });
     expect(await go("New Name")).toMatchObject({ imported: 0, updated: 1 });
+  });
+});
+
+describe("ERP sync (preview → apply → archive)", () => {
+  const upload = async (t: any, csv: string, mode: "import" | "sync", dryRun: boolean) => {
+    const { contacts, errors } = mapContacts(parseCsv(csv));
+    const jobId = await t.mutation(fn("importer:create"), { kind: "contacts", total: contacts.length, parseErrors: errors, mode, dryRun });
+    for (let i = 0; i < contacts.length; i += 200) await t.mutation(fn("importer:stage"), { jobId, startSeq: i, rows: contacts.slice(i, i + 200) });
+    await t.mutation(fn("importer:begin"), { jobId });
+    await settle(t);
+    return jobId;
+  };
+  const latest = (t: any) => t.query(fn("importer:latest"), {});
+  const count = (t: any, f: (c: any) => boolean) => t.run(async (ctx: any) => (await ctx.db.query("contacts").collect()).filter(f).length);
+
+  it("previews a changed snapshot without writing, then applies it", async () => {
+    const t = await setup();
+    await upload(t, sampleCsv(450, 1), "sync", false);
+    const base = await count(t, (c) => c.erpManaged);
+    const before = await t.run(async (ctx: any) => (await ctx.db.query("contactAddresses").collect()).length);
+
+    // Preview v2
+    const jobId = await upload(t, sampleCsv(450, 2), "sync", true);
+    const p = await latest(t);
+    expect(p).toMatchObject({ done: true, dryRun: true, error: null });
+    expect(p.updated).toBeGreaterThan(0);   // phone changes
+    expect(p.imported).toBeGreaterThan(0);  // new people
+    expect(p.wouldArchive).toBeGreaterThan(0); // people missing from v2
+    expect(p.changes.some((c: any) => c.kind === "updated" && c.diff[0].startsWith("phones:"))).toBe(true);
+    // Nothing was written by the preview
+    expect(await count(t, (c) => c.erpManaged)).toBe(base);
+    expect(await count(t, (c) => c.erpManaged && c.archivedAt)).toBe(0);
+    expect(await t.run(async (ctx: any) => (await ctx.db.query("contactAddresses").collect()).length)).toBe(before);
+
+    // Apply
+    await t.mutation(fn("importer:apply"), { jobId });
+    await settle(t);
+    const a = await latest(t);
+    expect(a).toMatchObject({ done: true, dryRun: false, error: null, archived: p.wouldArchive, updated: p.updated, imported: p.imported });
+    expect(await count(t, (c) => c.archivedAt)).toBe(a.archived);
+    expect(await count(t, (c) => c.erpManaged)).toBe(base + a.imported); // nothing deleted, only added
+  });
+
+  it("archived people are no longer recognised, and come back when they reappear", async () => {
+    const t = await setup();
+    const csv = (rows: string[]) => ["id,name,phone,email,building,unit", ...rows].join("\n");
+    const rows = Array.from({ length: 30 }, (_, i) => `${i},Person ${i},+4917000000${String(i).padStart(2, "0")},p${i}@x.com,Hill 1,${i}`);
+    await upload(t, csv(rows), "sync", false);
+    await upload(t, csv(rows.filter((r) => !r.startsWith("5,"))), "sync", false); // person 5 missing
+    expect(await count(t, (c) => c.archivedAt)).toBe(1);
+
+    await t.action(fn("demo:simulate"), { channel: "sms", externalId: "a1", from: "+470000", body: "x" }).catch(() => {});
+    const known = await t.query(fn("agentTools:findContact"), { phone: "+491700000005" }).catch(() => null);
+    expect(known ?? null).toBeNull(); // gone from the address book, record kept
+
+    await upload(t, csv(rows), "sync", false); // they're back in the next export
+    expect(await latest(t)).toMatchObject({ restored: 1 });
+    expect(await count(t, (c) => c.archivedAt)).toBe(0);
+  });
+
+  it("refuses to archive anyone when the export looks truncated", async () => {
+    const t = await setup();
+    await upload(t, sampleCsv(300, 1), "sync", false);
+    const total = await count(t, (c) => c.erpManaged);
+    await upload(t, sampleCsv(300, 1).split("\r\n").slice(0, 60).join("\r\n"), "sync", false); // cut off mid-file
+    const j = await latest(t);
+    expect(j.error).toMatch(/truncated/);
+    expect(await count(t, (c) => c.archivedAt)).toBe(0);
+    expect(await count(t, (c) => c.erpManaged)).toBe(total);
+  });
+});
+
+describe("owners, privacy", () => {
+  it("owner questions are handled as owner questions", async () => {
+    const t = await setup();
+    await t.action(fn("demo:simulate"), { channel: "sms", externalId: "ow1", from: "+4917612345678", body: "When is the next owners' meeting and how do I submit an agenda item?" });
+    await settle(t);
+    const c = (await state(t)).conversations[0];
+    expect(c).toMatchObject({ name: "Klaus Brandt", status: "agent_handled" });
+    expect(c.messages.at(-1).body).toMatch(/agenda/i);
+    expect((await state(t)).tickets).toHaveLength(1);
+  });
+
+  it("stored traces have phone numbers and emails masked", async () => {
+    const t = await setup();
+    await t.action(fn("demo:simulate"), { channel: "sms", externalId: "p1", from: "+447700900123", body: "Call me on +447700900123 about the heating" });
+    await settle(t);
+    const json = JSON.stringify((await state(t)).conversations[0].runs);
+    expect(json).not.toContain("+447700900123");
+    expect(json).toContain("+44•••••23");
+  });
+
+  it("erasePerson removes identity but keeps anonymised records", async () => {
+    const t = await setup();
+    await t.action(fn("demo:simulate"), { channel: "whatsapp", externalId: "er1", from: "+4915112345678", body: "Hallo, die Heizung ist kaputt" });
+    await settle(t);
+    const c = (await state(t)).conversations[0];
+    const contactId = c.contactId;
+    const counts = await t.mutation(fn("privacy:erasePerson"), { contactId });
+    expect(counts).toMatchObject({ conversations: 1, messages: 2, runs: 1 });
+    const after = (await state(t)).conversations[0];
+    expect(after).toMatchObject({ party: "erased", name: null });
+    expect(after.messages.every((m: any) => m.body === "[erased]")).toBe(true);
+    expect(after.runs).toHaveLength(0);
+    expect(await t.run(async (ctx: any) => ctx.db.get(contactId))).toBeNull();
+    // They are a stranger now: a new message from the same number is escalated, not answered.
+    await t.action(fn("demo:simulate"), { channel: "whatsapp", externalId: "er2", from: "+4915112345678", body: "Hi again" });
+    await settle(t);
+    const again = (await state(t)).conversations.find((x: any) => x.messages.some((m: any) => m.body === "Hi again"));
+    expect(again.status).toBe("needs_human");
   });
 });

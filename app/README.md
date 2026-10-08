@@ -8,7 +8,7 @@ importer** moves customers off their old system. TypeScript end to end: Convex, 
 |---|---|---|
 | ![inbox](docs/inbox.png) | ![studio](docs/studio.png) | ![migration](docs/migration.png) |
 
-<sub>UI screenshots rendered with sample data. Real flows are covered by the test suite below.</sub>
+<sub>UI screenshots rendered with sample data. Real flows are covered by the test suite below. Built from the public description of the product category; no insider knowledge of any specific company.</sub>
 
 ## What it does
 
@@ -17,13 +17,25 @@ importer** moves customers off their old system. TypeScript end to end: Convex, 
 - Twilio signatures verified (WebCrypto HMAC-SHA1, constant-time compare). Malformed payloads get `400`, never `5xx` (a 5xx makes providers retry for hours).
 - **Idempotent**: provider retries are no-ops, keyed by `(channel, externalId)` on an index, with check and insert in one transaction.
 - **Outbound delivery queue**: replies are persisted first, then sent by a scheduled action with exponential backoff. 5xx/429/network errors retry, 4xx fail immediately, and no provider configured means `skipped`. States (`pending → sent | failed | skipped`) show per message in the UI, with a manual retry.
-- **CSV migration**: the browser parses and validates, uploads to a staging table in chunks, then a self-rescheduling job drains 100 rows per transaction. Upserts by source id (re-running a file creates nothing; changed rows are `updated`); failing rows retry with backoff, then go to a dead-letter list. Rejected rows come with line numbers and a downloadable report.
+- **Migration and ERP sync**: the browser parses and validates a CSV, uploads it to a staging table in chunks, then a self-rescheduling job drains 100 rows per transaction.
+  - *One-off import*: upserts by source id (re-running a file creates nothing; changed rows are `updated`).
+  - *Recurring ERP sync*: the ERP stays the source of truth for names, phones and emails. **Preview first**: the same code runs but writes nothing, showing what would be created, updated or archived with field-level diffs; **Apply** then reuses the staged rows. People missing from the export are **archived, never deleted**, and restored if they reappear. A read-only check stops the sync before archiving anyone when the snapshot looks truncated (a half-empty export is a broken export, not a business event).
+  - Failing rows retry with backoff, then go to a dead-letter list. Rejected rows come with line numbers and a downloadable report.
 
 **Agents**
 - Tool loop (`core/agent.ts`) with a hard step cap, tool errors fed back to the model, always-available `reply`/`escalate`, and escalation on crash so no message is left unanswered.
 - **Agent Studio**: edit the system prompt, toggle tools, set max steps, manage the knowledge base, and **try the unsaved draft in a sandbox** against live data with every write captured instead of executed.
 - **Real Claude** via the Messages API: prompt caching on system prompt + tools, retry on 429/5xx honouring `retry-after`, token usage recorded per run.
-- **Evals** (`npm run eval`): 9 scenarios (emergencies in two languages, duplicate tickets, unknown senders, billing, prompt injection…). Run with a key to score the real model. Exits non-zero on failure, so it can gate prompt changes.
+- **Evals** (`npm run eval`): 12 scenarios (emergencies in two languages, duplicate tickets, owner vs tenant handling, unknown senders, billing, prompt injection…). Run with a key to score the real model. Exits non-zero on failure, so it can gate prompt changes.
+
+**Domain fit (property management)**
+- Senders are **tenants or owners** (condominium owners' associations). The agent checks the role: tenants get repair flows; owners get meeting/statement answers, common-area problems become `common_area` tickets, and statement disputes always go to a human.
+- The agent replies in the sender's language, so German messages work even though the UI is English.
+- Knowledge-base search is two-stage: the text index for recall, then a ranker with stopwords and a relevance floor for precision, so the agent never quotes an irrelevant "closest" article.
+
+**Data protection (GDPR)**
+- Phone numbers and emails are **masked in stored agent traces**.
+- **Erase data** in the inbox implements the right to erasure: the contact and addresses are deleted, messages and tickets are anonymised (kept for audit, personal content removed), traces are deleted. The person is a stranger to the agent afterwards.
 
 **Product**
 - Real-time inbox: needs-human first, escalation reason shown, human replies through the same queue, delivery badges, per-run agent trace with tokens and latency.
@@ -64,7 +76,7 @@ npm run eval
 ```
 
 - `test/core*.test.ts`: normalisers, signature check, KB ranking, agent guardrails, Anthropic client (request shape, caching markers, retries), sandbox, outbound classification, CSV, importer, and the eval harness (including that it **catches** a reckless agent).
-- `test/convex.test.ts`: the **real Convex functions** run in `convex-test`'s mock runtime: webhook → ingest → scheduled agent → outbound retries; sandbox has zero side effects; saved config changes behaviour; staged import with re-run convergence.
+- `test/convex.test.ts`: the **real Convex functions** run in `convex-test`'s mock runtime: webhook → ingest → scheduled agent → outbound retries; sandbox has zero side effects; saved config changes behaviour; staged import with re-run convergence; ERP sync preview (verified to write nothing) → apply → archive/restore, truncated-export safety stop; trace masking; erasure.
 
 ## Layout
 
@@ -79,7 +91,7 @@ Design notes: every query reads through an index with `take()` bounds; the agent
 ## Honest limits
 
 - **Verified live (real Convex deployment):** schema/indexes, ingest, scheduled agent run, real-time UI, idempotent re-delivery.
-- **Verified only in the test runtime, not yet on a live deployment:** the outbound queue, Agent Studio, staged importer and the newest UI. Their logic is unit/integration tested, but deploy and click through before relying on it.
+- **Verified only in the test runtime, not yet on a live deployment:** the outbound queue, Agent Studio, importer/ERP sync, privacy features and the newest UI. Their logic is unit/integration tested, but deploy and click through before relying on it.
 - **Not exercised against real services:** Twilio/Vonage/Resend (HTTP shape and error handling tested with mocks) and the Anthropic API (request/response handling tested with mocks; run `npm run eval` with a key for the real thing).
 - Vonage webhook auth is a shared bearer token; production should verify their signed JWT.
 - Single agent per deployment, no auth/multi-tenancy, no vector search (the KB uses a text index), no attachments.

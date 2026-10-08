@@ -14,7 +14,11 @@ export default defineSchema({
     unitId: v.optional(v.id("units")),
     role: v.union(v.literal("tenant"), v.literal("owner"), v.literal("vendor")),
     sourceId: v.optional(v.string()),
-  }).index("by_sourceId", ["sourceId"]),
+    // ERP sync bookkeeping: `seenJobId` marks "present in the latest snapshot"; absent => archived, never deleted.
+    erpManaged: v.optional(v.boolean()),
+    seenJobId: v.optional(v.string()),
+    archivedAt: v.optional(v.number()),
+  }).index("by_sourceId", ["sourceId"]).index("by_erpManaged", ["erpManaged"]),
 
   // Lookup tables: a contact can have many addresses, and we match inbound by exact address.
   contactAddresses: defineTable({ address: v.string(), contactId: v.id("contacts") })
@@ -30,6 +34,7 @@ export default defineSchema({
     escalationReason: v.optional(v.string()),
   })
     .index("by_party_channel", ["party", "channel"])
+    .index("by_contact", ["contactId"])
     .index("by_status_lastAt", ["status", "lastAt"]),
 
   messages: defineTable({
@@ -55,7 +60,7 @@ export default defineSchema({
     urgency: v.union(v.literal("low"), v.literal("normal"), v.literal("emergency")),
     summary: v.string(),
     status: v.union(v.literal("open"), v.literal("closed")),
-  }).index("by_unit_status", ["unitId", "status"]),
+  }).index("by_unit_status", ["unitId", "status"]).index("by_contact", ["contactId"]),
 
   kbArticles: defineTable({ title: v.string(), body: v.string() })
     .searchIndex("search_body", { searchField: "body" }),
@@ -92,6 +97,16 @@ export default defineSchema({
     updated: v.optional(v.number()),
     total: v.optional(v.number()),
     parseErrors: v.optional(v.any()),
+    mode: v.optional(v.union(v.literal("import"), v.literal("sync"))),
+    dryRun: v.optional(v.boolean()),
+    phase: v.optional(v.union(v.literal("upsert"), v.literal("archive"))),
+    archiveCursor: v.optional(v.union(v.string(), v.null())),
+    archiveStep: v.optional(v.union(v.literal("count"), v.literal("apply"))),
+    wouldArchive: v.optional(v.number()),
+    error: v.optional(v.string()),
+    restored: v.optional(v.number()),
+    archived: v.optional(v.number()),
+    changes: v.optional(v.any()),
     startedAt: v.optional(v.number()),
     finishedAt: v.optional(v.number()),
     retry: v.any(),

@@ -20,6 +20,7 @@ export const ref = {
   humanReply: makeFunctionReference<"mutation">("inbox:humanReply"),
   resolve: makeFunctionReference<"mutation">("inbox:resolve"),
   retry: makeFunctionReference<"mutation">("inbox:retryDelivery"),
+  erase: makeFunctionReference<"mutation">("privacy:erasePerson"),
 };
 
 type Tab = "inbox" | "studio" | "migration";
@@ -67,6 +68,7 @@ function InboxView() {
   const humanReply = useMutation(ref.humanReply);
   const resolve = useMutation(ref.resolve);
   const retry = useMutation(ref.retry);
+  const erase = useMutation(ref.erase);
   const [sel, setSel] = useState<string | null>(null);
   const [text, setText] = useState("");
   const [note, setNote] = useState<string | null>(null);
@@ -122,8 +124,16 @@ function InboxView() {
           {!conv ? <p className="p-4 text-sm text-zinc-500">Select a conversation.</p> : (
             <>
               <div className="flex items-center justify-between border-b p-3">
-                <div className="text-sm"><b>{conv.name ?? "Unknown sender"}</b> <span className="text-zinc-500">· {conv.party}</span></div>
-                {conv.status !== "resolved" && <Button size="sm" variant="outline" onClick={() => resolve({ conversationId: conv._id })}>Mark resolved</Button>}
+                <div className="flex items-center gap-2 text-sm"><b>{conv.name ?? "Unknown sender"}</b>
+                  {conv.role && <Badge tone={conv.role === "owner" ? "blue" : "neutral"}>{conv.role}</Badge>}
+                  <span className="text-zinc-500">· {conv.party}</span></div>
+                <div className="flex gap-2">
+                  {conv.contactId && (
+                    <Button size="sm" variant="ghost" title="GDPR right to erasure: removes this person's contact data and anonymises their messages"
+                      onClick={async () => { if (window.confirm(`Erase all personal data for ${conv.name}? Their messages are anonymised and cannot be recovered.`)) { const r: any = await erase({ contactId: conv.contactId }); setNote(`Erased: ${r.messages} messages anonymised, ${r.runs} traces deleted.`); } }}>Erase data</Button>
+                  )}
+                  {conv.status !== "resolved" && <Button size="sm" variant="outline" onClick={() => resolve({ conversationId: conv._id })}>Mark resolved</Button>}
+                </div>
               </div>
               <div className="flex-1 space-y-2 overflow-auto p-4">
                 {conv.messages.map((m: any) => (

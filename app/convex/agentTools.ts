@@ -1,6 +1,8 @@
 import { internalMutation as mutation, internalQuery as query } from "./_fn";
 import { v } from "convex/values";
 import { DEFAULT_SYSTEM, TOOLS } from "../core/agent";
+import { maskDeep } from "../core/privacy";
+import { searchKb as rank } from "../core/kb";
 
 export const getConfig = query({
   args: {},
@@ -34,11 +36,18 @@ export const openTickets = query({
     (await ctx.db.query("tickets").withIndex("by_unit_status", (q) => q.eq("unitId", a.unitId as any).eq("status", "open")).take(20))
       .map((t) => ({ id: t._id, category: t.category, urgency: t.urgency, summary: t.summary, status: t.status })),
 });
+/**
+ * Two-stage retrieval: the search index gives recall (any article sharing a term), then our ranker
+ * (BM25 with stopwords + a relevance floor) gives precision. Without the second stage, a question
+ * full of common words happily returns an irrelevant "closest" article, and the agent would then
+ * confidently quote it.
+ */
 export const searchKb = query({
   args: { query: v.string(), limit: v.number() },
-  handler: async (ctx, a) =>
-    (await ctx.db.query("kbArticles").withSearchIndex("search_body", (q) => q.search("body", a.query)).take(a.limit))
-      .map((k) => ({ id: k._id, title: k.title, body: k.body })),
+  handler: async (ctx, a) => {
+    const candidates = await ctx.db.query("kbArticles").withSearchIndex("search_body", (q) => q.search("body", a.query)).take(25);
+    return rank(candidates.map((k) => ({ id: k._id, title: k.title, body: k.body })), a.query, a.limit);
+  },
 });
 export const createTicket = mutation({
   args: { unitId: v.optional(v.string()), contactId: v.optional(v.string()), category: v.string(), urgency: v.union(v.literal("low"), v.literal("normal"), v.literal("emergency")), summary: v.string() },
@@ -70,5 +79,6 @@ export const recordRun = mutation({
     conversationId: v.id("conversations"), steps: v.any(), outcome: v.union(v.literal("replied"), v.literal("escalated"), v.literal("failed")),
     usage: v.optional(v.any()), llmCalls: v.optional(v.number()), model: v.optional(v.string()), ms: v.optional(v.number()),
   },
-  handler: async (ctx, a) => { await ctx.db.insert("agentRuns", a); },
+  // Traces are kept for debugging, so phone numbers and email addresses are masked before they are stored.
+  handler: async (ctx, a) => { await ctx.db.insert("agentRuns", { ...a, steps: maskDeep(a.steps) }); },
 });

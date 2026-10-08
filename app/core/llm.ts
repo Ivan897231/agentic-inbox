@@ -77,6 +77,8 @@ export function anthropicLlm(apiKey: string, opts: AnthropicOptions = {}): Llm {
 const EMERGENCY = /(gas|smell of gas|fire|flood|water.*(ceiling|pouring)|burst|no heat.*(freez|baby)|carbon monoxide|gasgeruch|wasserrohrbruch|feuer)/i;
 const MAINT = /(leak|broken|heating|heater|boiler|mold|mould|lock|door|window|light|elevator|lift|noise|kaputt|heizung|defekt|tropft)/i;
 const BILLING = /(rent|invoice|deposit|payment|charge|miete|rechnung|kaution)/i;
+const OWNER_MONEY = /(statement|abrechnung|levy|umlage|hausgeld|reserve fund|special assessment|wrong|incorrect|dispute|never approved|lawyer|anwalt)/i;
+const COMMON = /(roof|stairwell|staircase|hallway light|lift|elevator|courtyard|garage door|dach|treppenhaus|aufzug)/i;
 const ACCESS = /(key|keys|locked out|access|schlüssel|fob)/i;
 
 /**
@@ -101,6 +103,7 @@ export function scriptedLlm(): Llm {
         if (!called("create_ticket")) return call("create_ticket", { category: "maintenance", urgency: "emergency", summary: text.slice(0, 140) });
         return call("escalate", { reason: "Emergency keywords detected; ticket created, on-call paged" });
       }
+      if (who?.role === "owner" && OWNER_MONEY.test(text)) return call("escalate", { reason: "Owner statement/billing dispute: needs the account manager" });
       if (!called("list_open_tickets")) return call("list_open_tickets");
       if (!called("search_kb")) return call("search_kb", { query: text });
       const kb = result("search_kb") as { title: string; body: string }[];
@@ -108,7 +111,8 @@ export function scriptedLlm(): Llm {
       if (BILLING.test(text) && !MAINT.test(text)) return call("escalate", { reason: "Billing question: needs a human" });
       if (dup) return call("reply", { text: `Hi ${who.name}, we already have an open ticket for this (“${dup.summary}”). A technician will be in touch; no need to report it again.` });
       if ((MAINT.test(text) || ACCESS.test(text)) && !called("create_ticket")) {
-        return call("create_ticket", { category: ACCESS.test(text) ? "access" : "maintenance", urgency: "normal", summary: text.slice(0, 140) });
+        const category = ACCESS.test(text) ? "access" : who?.role === "owner" && COMMON.test(text) ? "common_area" : "maintenance";
+        return call("create_ticket", { category, urgency: "normal", summary: text.slice(0, 140) });
       }
       const ticket = result("create_ticket");
       const tip = kb?.[0] ? ` ${kb[0].body}` : "";

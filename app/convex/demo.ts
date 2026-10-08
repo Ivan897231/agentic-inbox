@@ -39,6 +39,7 @@ export const state = query({
       out.push({
         ...c,
         name: contact?.name ?? null,
+        role: contact?.role ?? null,
         messages: await ctx.db.query("messages").withIndex("by_conversation", (q) => q.eq("conversationId", c._id)).take(100),
         runs: await ctx.db.query("agentRuns").withIndex("by_conversation", (q) => q.eq("conversationId", c._id)).take(5),
       });

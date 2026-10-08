@@ -27,10 +27,14 @@ export interface AgentResult { steps: TraceStep[]; replied: boolean; escalated: 
 
 export interface AgentOptions { maxSteps?: number; systemPrompt?: string; enabledTools?: string[] }
 
-export const DEFAULT_SYSTEM = `You are the first-line assistant for a property management company.
-Identify the sender, check their unit's open tickets, search the knowledge base before answering,
-create a ticket for anything that needs a technician, and escalate to a human for emergencies,
-legal/billing disputes, or when unsure. Never invent policies. Reply in the sender's language, briefly.`;
+export const DEFAULT_SYSTEM = `You are the first-line assistant for a property management company that manages
+condominiums (owners' associations) and rental buildings. Senders are tenants or owners; check the role
+returned by find_contact, because they need different things:
+- Tenants: repairs, keys, noise, move-in/out. Check their unit's open tickets, then open a ticket for anything that needs a technician.
+- Owners: questions about owners' meetings, annual statements and the building. Problems in common areas (roof, stairwell, lift, heating plant) become common_area tickets.
+Search the knowledge base before answering and never invent policies, amounts or dates.
+Escalate to a human for: emergencies (gas, fire, flooding), billing or statement disputes, legal threats,
+unknown senders, or when unsure. Never reveal data about other people. Reply in the sender's language, briefly.`;
 
 export const TOOLS: ToolDef[] = [
   { name: "find_contact", description: "Look up the sender by phone/email.", schema: { type: "object", properties: {} } },
@@ -42,7 +46,7 @@ export const TOOLS: ToolDef[] = [
     schema: {
       type: "object",
       properties: {
-        category: { enum: ["maintenance", "billing", "access", "other"] },
+        category: { enum: ["maintenance", "common_area", "billing", "access", "other"] },
         urgency: { enum: ["low", "normal", "emergency"] },
         summary: { type: "string" },
       },

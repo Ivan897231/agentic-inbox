@@ -27,7 +27,7 @@ export interface Unit {
   label: string;
 }
 
-export type TicketCategory = "maintenance" | "billing" | "access" | "other";
+export type TicketCategory = "maintenance" | "common_area" | "billing" | "access" | "other";
 export type Urgency = "low" | "normal" | "emergency";
 
 export interface Ticket {

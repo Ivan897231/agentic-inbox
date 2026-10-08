@@ -156,3 +156,30 @@ describe("agent eval harness", () => {
     expect(failed).toEqual(expect.arrayContaining(["emergency-en", "billing", "unknown-sender"]));
   });
 });
+
+import { diffFields, pushSample } from "../core/sync";
+import { maskDeep, maskText } from "../core/privacy";
+describe("sync diff", () => {
+  const base = { name: "Ana", phones: ["+491", "+492"], emails: ["a@x.com"], role: "tenant" };
+  it("ignores list order, reports real changes readably", () => {
+    expect(diffFields(base, { ...base, phones: ["+492", "+491"] })).toEqual([]);
+    expect(diffFields(base, { ...base, name: "Ana B", phones: ["+499"] })).toEqual(["name: Ana → Ana B", "phones: +491, +492 → +499"]);
+  });
+  it("keeps a bounded sample per kind", () => {
+    let l: any[] = [];
+    for (let i = 0; i < 20; i++) l = pushSample(l, { kind: "updated", sourceId: String(i), name: "x" }, 5);
+    l = pushSample(l, { kind: "archived", sourceId: "z", name: "y" }, 5);
+    expect(l.filter((x) => x.kind === "updated")).toHaveLength(5);
+    expect(l.filter((x) => x.kind === "archived")).toHaveLength(1);
+  });
+});
+
+describe("privacy masking", () => {
+  it("masks phones and emails but keeps useful shape", () => {
+    expect(maskText("call +4915112345678 or mail maria.keller@example.com")).toBe("call +49•••••78 or mail m***@example.com");
+    expect(maskText("apartment 12, 3rd floor")).toBe("apartment 12, 3rd floor");
+  });
+  it("masks deeply inside traces", () => {
+    expect(maskDeep({ a: [{ phone: "+447700900123" }], n: 5 })).toEqual({ a: [{ phone: "+44•••••23" }], n: 5 });
+  });
+});

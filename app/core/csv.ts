@@ -62,16 +62,23 @@ export function mapContacts(rows: string[][]): { contacts: ContactRow[]; errors:
   return { contacts, errors };
 }
 
-/** Deterministic synthetic legacy export for demos: duplicates, bad rows, mixed formats. */
-export function sampleCsv(n = 2000): string {
+/**
+ * Deterministic synthetic ERP export for demos: duplicates, bad rows, mixed formats.
+ * version 2 is the "next night's export": a few people removed, a few phone numbers changed,
+ * and a few new people. Importing v1 then syncing v2 shows every kind of change.
+ */
+export function sampleCsv(n = 2000, version: 1 | 2 = 1): string {
   const first = ["Maria", "Tom", "Aiko", "Lukas", "Sofia", "Omar", "Anna", "Jonas", "Elena", "Piotr"];
   const last = ["Keller", "Becker", "Sato", "Meyer", "Rossi", "Haddad", "Novak", "Fischer", "Silva", "Kowalski"];
   const lines = ["id,full_name,phone,email,property,apartment,type"];
-  for (let i = 0; i < n; i++) {
+  const total = version === 2 ? n + Math.max(3, Math.round(n / 100)) : n;
+  for (let i = 0; i < total; i++) {
+    if (version === 2 && i < n && i % 100 === 7) continue; // left the company's books since v1
     const nm = `${first[i % 10]} ${last[(i * 7) % 10]}`;
+    const phone = version === 2 && i % 50 === 3 ? `+49 160 0${String(i).padStart(6, "0")}` : `+49 151 00${String(i).padStart(5, "0")}`;
     if (i % 400 === 399) lines.push(`${i},,+4915100${i},nobody@example.com,Linden Court ${1 + (i % 9)},${i % 40},tenant`); // no name
     else if (i % 333 === 332) lines.push(`${i},"${nm}",+4915100${i},not-an-email,Linden Court ${1 + (i % 9)},${i % 40},tenant`); // bad email
-    else lines.push(`${i},"${nm}","+49 151 00${String(i).padStart(5, "0")}",${nm.toLowerCase().replace(" ", ".")}${i}@example.com,Linden Court ${1 + (i % 9)},${i % 40},${i % 50 === 0 ? "owner" : "tenant"}`);
+    else lines.push(`${i},"${nm}","${phone}",${nm.toLowerCase().replace(" ", ".")}${i}@example.com,Linden Court ${1 + (i % 9)},${i % 40},${i % 50 === 0 ? "owner" : "tenant"}`);
   }
   return lines.join("\r\n");
 }
